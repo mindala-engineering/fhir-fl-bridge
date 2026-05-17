@@ -1,5 +1,10 @@
 # P2 — FHIR-FL Bridge
+
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
 ### Mindala Health — CNPJ 64.763.242/0001-10
+
+
 
 > *"Antes de construir uma ponte, é preciso conhecer os dois rios que ela vai unir.*
 > *Não basta medir a distância — é preciso entender a correnteza de cada um."*
