@@ -1,0 +1,34 @@
+# Dependências
+/_build/
+/deps/
+/doc/
+
+# Cobertura de testes
+/cover/
+/tmp/
+
+# Artefatos de release
+/priv/static/
+
+# Variáveis de ambiente (NUNCA commitar .env)
+.env
+.env.local
+.env.*.local
+
+# Erlang/Elixir
+*.ez
+*.beam
+erl_crash.dump
+
+# Editor
+.elixir_ls/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
