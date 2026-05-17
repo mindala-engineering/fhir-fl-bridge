@@ -1,0 +1,33 @@
+# =============================================================================
+# Dockerfile.dev — Desenvolvimento com hot reload
+# Mindala Health · FHIR-FL Bridge (P2)
+#
+# USO: docker compose up  (via docker-compose.yml da raiz ou do próprio P2)
+#
+# Diferente do Dockerfile de produção (multi-stage + release):
+# - Monta o código-fonte como volume (hot reload via `mix phx.server`)
+# - Não compila release — mais rápido para iterar
+# - Inclui ferramentas de dev (iex, observer, etc.)
+# =============================================================================
+FROM hexpm/elixir:1.16.3-erlang-26.2.5-alpine-3.20.0
+
+RUN apk add --no-cache \
+    build-base \
+    git \
+    inotify-tools
+
+WORKDIR /app
+
+RUN mix local.hex --force && mix local.rebar --force
+
+ENV MIX_ENV=dev
+
+# mix.lock* — o glob torna o arquivo opcional.
+# Na primeira vez (sem mix.lock), o container roda `mix deps.get`
+# que gera o mix.lock dentro do volume montado.
+COPY mix.exs mix.lock* ./
+RUN mix deps.get
+
+EXPOSE 4001
+
+CMD ["mix", "phx.server"]

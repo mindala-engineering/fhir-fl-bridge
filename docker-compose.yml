@@ -1,0 +1,255 @@
+# =============================================================================
+# docker-compose.yml — Stack completa: P1 + P2 + Nós FL municipais
+# Mindala Health — CNPJ 64.763.242/0001-10
+#
+# PARÁBOLA DO DELTA
+#
+# Dois rios nascem na mesma serra por caminhos diferentes.
+# No delta, eles se encontram — sem apagar um ao outro.
+# Juntos chegam ao mar com mais força do que cada um sozinho.
+#
+# Este compose é o delta: P1 (Lexicon Vivo) e P2 (FHIR-FL Bridge)
+# correm em containers independentes e se encontram na rede Docker.
+# Os nós municipais simulam o que um dia serão secretarias reais.
+#
+# — Parábola do Delta (tradição oral do Vale do Itajaí)
+# =============================================================================
+#
+# USO RÁPIDO:
+#
+#   # Clonar os dois repos no mesmo nível (obrigatório):
+#   git clone https://github.com/mindala-health/lexicon-vivo
+#   git clone https://github.com/mindala-health/fhir-fl-bridge
+#   cd fhir-fl-bridge
+#
+#   # Subir tudo:
+#   docker compose up
+#
+#   # Aguardar ~60s na primeira vez (build + Neo4j inicializando)
+#
+#   # Testar P1:
+#   curl http://localhost:8000/health
+#   curl http://localhost:8000/v1/fhir/CodeSystem | python3 -m json.tool
+#
+#   # Testar mapeamento FHIR via P2:
+#   curl -X POST http://localhost:4001/api/v1/fhir/map \
+#     -H "Content-Type: application/json" \
+#     -d '{"municipality_code":"4205407","resource":{"resourceType":"Observation","code":{"coding":[{"system":"local","code":"acupuntura-florian-001","display":"Acupuntura"}]}}}'
+#
+#   # Iniciar rodada FL:
+#   curl -X POST http://localhost:4001/api/v1/fl/rounds \
+#     -H "Content-Type: application/json" \
+#     -d '{"participants":[{"municipality_code":"4205407","node_url":"http://node-floripa:8080","confidence_weight":0.558},{"municipality_code":"4202404","node_url":"http://node-blumenau:8080","confidence_weight":0.442}]}'
+#
+#   # Ver resultado da rodada (substituir pelo round_id retornado acima):
+#   curl http://localhost:4001/api/v1/fl/rounds/{round_id}
+#
+#   # Parar tudo:
+#   docker compose down
+#
+#   # Parar e apagar volumes (reset completo):
+#   docker compose down -v
+# =============================================================================
+
+services:
+
+  # ===========================================================================
+  # INFRAESTRUTURA
+  # ===========================================================================
+
+  neo4j:
+    image: neo4j:5.18-community
+    container_name: mindala-neo4j
+    environment:
+      NEO4J_AUTH: neo4j/lexicon123
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_apoc_export_file_enabled: "true"
+      NEO4J_apoc_import_file_enabled: "true"
+      NEO4J_apoc_import_file_use__neo4j__config: "true"
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
+    ports:
+      - "7474:7474"   # Neo4j Browser — http://localhost:7474
+      - "7687:7687"   # Bolt protocol
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_plugins:/plugins
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    networks:
+      - mindala-net
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: mindala-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fhir_fl_bridge_dev
+    ports:
+      - "5433:5432"   # 5433 no host para não conflitar com Postgres local
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - mindala-net
+
+  # ===========================================================================
+  # P1 — LEXICON VIVO
+  # Vocabulário controlado de MTCI para o SUS
+  #
+  # Requer: ../lexicon-vivo clonado no mesmo nível que este repo
+  # ===========================================================================
+
+  lexicon-vivo:
+    build:
+      context: ../lexicon-vivo
+      dockerfile: Dockerfile
+    container_name: mindala-lexicon-vivo
+    ports:
+      - "8000:8000"   # API REST — http://localhost:8000/docs
+    environment:
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: neo4j
+      NEO4J_PASSWORD: lexicon123
+      APP_ENV: development
+      APP_PORT: 8000
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - mindala-net
+
+  # ===========================================================================
+  # P2 — FHIR-FL BRIDGE
+  # Mapeamento terminológico FHIR + orquestrador de Federated Learning
+  # ===========================================================================
+
+  fhir-fl-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: mindala-fhir-fl-bridge
+    ports:
+      - "4001:4001"   # API REST — http://localhost:4001
+    environment:
+      DATABASE_URL: ecto://postgres:postgres@postgres:5432/fhir_fl_bridge_dev
+      LEXICON_BASE_URL: http://lexicon-vivo:8000
+      LEXICON_API_KEY: dev-key-mindala
+      PHX_HOST: localhost
+      PORT: 4001
+      SECRET_KEY_BASE: dev_secret_mindala_fhir_fl_bridge_32_chars_min_length_ok
+      MIX_ENV: dev
+      FL_ROUND_TIMEOUT_MS: 300000
+      FL_MIN_PARTICIPANTS: 2
+    volumes:
+      - .:/app
+      - bridge_build:/app/_build
+      - bridge_deps:/app/deps
+    depends_on:
+      postgres:
+        condition: service_healthy
+      lexicon-vivo:
+        condition: service_healthy
+    command: >
+      sh -c "mix ecto.create --quiet &&
+             mix ecto.migrate --quiet &&
+             mix phx.server"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    networks:
+      - mindala-net
+
+  # ===========================================================================
+  # NÓS MUNICIPAIS FL (simulados)
+  # Emulam dois municípios com dados MTCI distintos para demonstração do FL
+  # ===========================================================================
+
+  node-floripa:
+    build:
+      context: ./fl-nodes
+      dockerfile: Dockerfile
+    container_name: mindala-node-floripa
+    environment:
+      MUNICIPALITY_CODE: "4205407"
+      MUNICIPALITY_NAME: "Florianópolis"
+      P2_URL: http://fhir-fl-bridge:4001
+      PORT: 8080
+    ports:
+      - "8081:8080"   # http://localhost:8081/data/summary
+    depends_on:
+      fhir-fl-bridge:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - mindala-net
+
+  node-blumenau:
+    build:
+      context: ./fl-nodes
+      dockerfile: Dockerfile
+    container_name: mindala-node-blumenau
+    environment:
+      MUNICIPALITY_CODE: "4202404"
+      MUNICIPALITY_NAME: "Blumenau"
+      P2_URL: http://fhir-fl-bridge:4001
+      PORT: 8080
+    ports:
+      - "8082:8080"   # http://localhost:8082/data/summary
+    depends_on:
+      fhir-fl-bridge:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - mindala-net
+
+# =============================================================================
+# REDE
+# =============================================================================
+
+networks:
+  mindala-net:
+    name: mindala-net
+    driver: bridge
+
+# =============================================================================
+# VOLUMES
+# =============================================================================
+
+volumes:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_plugins:
+  postgres_data:
+  bridge_build:
+  bridge_deps:
